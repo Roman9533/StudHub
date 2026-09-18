@@ -1,11 +1,11 @@
-from django.shortcuts import render
+from django.shortcuts import render, redirect
 from rest_framework import viewsets, permissions, status, filters
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
 from django.db.models import Q
 from .models import Material
-
+from .forms import MaterialUploadForm
 from .models import User, Discipline, Material, MaterialRating
 from .serializers import UserSerializer, DisciplineSerializer, MaterialSerializer, RatingSerializer
 from .permissions import IsModeratorOrAuthorReadOnly
@@ -24,7 +24,7 @@ class UserViewSet(viewsets.ModelViewSet):
 class DisciplineViewSet(viewsets.ModelViewSet):
     queryset = Discipline.objects.all()
     serializer_class = DisciplineSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
     filterset_fields = ['semester', 'faculty']
     search_fields = ['title', 'lecturer']
@@ -32,7 +32,7 @@ class DisciplineViewSet(viewsets.ModelViewSet):
 
 class MaterialViewSet(viewsets.ModelViewSet):
     serializer_class = MaterialSerializer
-    permission_classes = [permissions.IsAuthenticated, IsModeratorOrAuthorReadOnly]
+    permission_classes = [permissions.IsAuthenticatedOrReadOnly, IsModeratorOrAuthorReadOnly]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
     filterset_fields = ['material_type', 'discipline', 'is_verified']
     search_fields = ['title', 'description']
@@ -80,24 +80,34 @@ class MaterialViewSet(viewsets.ModelViewSet):
     # ... предыдущий код ViewSets ...
 
 def home_page(request):
-     
     search_query = request.GET.get('search', '')
     
-    # Базовый запрос: только проверенные материалы
+    # Обработка загрузки данных пользователем
+    if request.method == 'POST':
+        form = MaterialUploadForm(request.POST, request.FILES)
+        if form.is_valid():
+            material = form.save(commit=False)
+            # Если пользователь авторизован — привязываем его как автора
+            if request.user.is_authenticated:
+                material.author = request.user
+            # ВАЖНО: Новые файлы от студентов уходят на премодерацию (is_verified = False)
+            material.is_verified = False 
+            material.save()
+            return redirect('/') # Перезагружаем страницу после успешной отправки
+    else:
+        form = MaterialUploadForm()
+        
+    # Базовый запрос для вывода карточек
     materials_queryset = Material.objects.filter(is_verified=True).select_related('discipline')
-    
-    # Если пользователь что-то ввел в поиск, фильтруем базу данных
     if search_query:
         materials_queryset = materials_queryset.filter(
             Q(title__icontains=search_query) | Q(description__icontains=search_query)
         )
-    
-    # Берем первые 6 материалов (актуальные или отфильтрованные)
-    latest_materials = materials_queryset[:6]
-    
+        
     context = {
-        'materials': latest_materials,
-        'search_query': search_query  # Передаем сам запрос обратно, чтобы показать его в строке
+        'materials': materials_queryset[:6],
+        'search_query': search_query,
+        'upload_form': form # Отправляем форму на сайт
     }
     return render(request, 'index.html', context)
 
